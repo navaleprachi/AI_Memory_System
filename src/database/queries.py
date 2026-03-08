@@ -1,11 +1,13 @@
 import asyncpg, tiktoken
+from src.chunking import count_tokens, chunk_text
+from src.embeddings import embed_batch
 
 enc = tiktoken.encoding_for_model("gpt-4o-mini")
 
 def count_tokens(text: str) -> int:
     return len(enc.encode(text))
 
-# Cnnversation queries
+# Conversation queries
 async def create_conversation(db: asyncpg.Connection, title: str = None) -> str:
     row = await db.fetchrow('''
         INSERT INTO conversations (title) VALUES ($1) RETURNING id, title, created_at, last_active, message_count, status
@@ -37,3 +39,25 @@ async def get_messages(db: asyncpg.Connection, conv_id: str) -> list:
         SELECT id, role, content, token_count, created_at FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC
     ''', conv_id)
     return [dict(r) for r in rows]
+
+# Chunk queries
+async def save_chunks(db, message_id: str, conv_id: str, content: str) -> int:
+    # Chunk a message, embed all chunks, save to DB. Returns chunk count.
+    texts = chunk_text(content)
+    if not texts:
+        return 0
+    
+    # Embed all chunks in one API call
+    vectors = await embed_batch(texts)
+    
+    # Save all chunks to DB
+    async with db.acquire() as conn:
+        for i, (text, vector) in enumerate(zip(texts, vectors)):
+            vector_text = '[' + ','.join(str(v) for v in vector) + ']'
+            await conn.execute('''
+                INSERT INTO chunks (message_id, conversation_id, content, chunk_index, token_count, embedding)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            ''', message_id, conv_id, text, i, count_tokens(text), vector_text)
+    return len(texts)
+            
+    
