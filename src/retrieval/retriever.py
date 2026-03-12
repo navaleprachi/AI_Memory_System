@@ -21,8 +21,10 @@ async def search_chunks(db, query: str, conv_id: str = None, top_k: int = TOP_K_
                 c.chunk_index,
                 c.token_count,
                 c.created_at,
-                1 - (c.embedding <=> $1::vector) AS similarity
+                1 - (c.embedding <=> $1::vector) AS similarity,
+                COALESCE(m.importance_score, 0.5) AS importance_score
                 FROM chunks c
+                JOIN messages m ON m.id = c.message_id
                 WHERE c.embedding IS NOT NULL
                 AND c.conversation_id = $2
                 ORDER BY c.embedding <=> $1::vector
@@ -41,8 +43,10 @@ async def search_chunks(db, query: str, conv_id: str = None, top_k: int = TOP_K_
                 c.chunk_index,
                 c.token_count,
                 c.created_at,
-                1 - (c.embedding <=> $1::vector) AS similarity
+                1 - (c.embedding <=> $1::vector) AS similarity,
+                COALESCE(m.importance_score, 0.5) AS importance_score
                 FROM chunks c
+                JOIN messages m ON m.id = c.message_id
                 WHERE c.embedding IS NOT NULL
                 ORDER BY c.embedding <=> $1::vector
                 LIMIT $2
@@ -58,7 +62,8 @@ async def search_chunks(db, query: str, conv_id: str = None, top_k: int = TOP_K_
             'chunk_index': r['chunk_index'],
             'token_count': r['token_count'],
             'created_at': r['created_at'].isoformat(),
-            'similarity': r['similarity']
+            'similarity': r['similarity'],
+            'importance_score': r['importance_score']
         }
         for r in rows
     ]

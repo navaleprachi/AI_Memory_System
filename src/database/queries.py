@@ -59,5 +59,11 @@ async def save_chunks(db, message_id: str, conv_id: str, content: str) -> int:
                 VALUES ($1, $2, $3, $4, $5, $6)
             ''', message_id, conv_id, text, i, count_tokens(text), vector_text)
     return len(texts)
-            
+
+# Importance score
+async def update_importance_score(db, message_id: str, importance_score: float) -> None:
+    async with db.acquire() as conn:
+        await conn.execute('''
+            UPDATE messages SET importance_score = $1 WHERE id = $2
+        ''', importance_score, message_id)
     
