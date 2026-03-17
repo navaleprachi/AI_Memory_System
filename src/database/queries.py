@@ -66,4 +66,25 @@ async def update_importance_score(db, message_id: str, importance_score: float) 
         await conn.execute('''
             UPDATE messages SET importance_score = $1 WHERE id = $2
         ''', importance_score, message_id)
-    
+ 
+async def get_summaries(db, conversation_id: str)-> list[dict]:
+    # Fetach all summaries for a conversation, newest first.
+    async with db.acquire() as conn:
+        rows = await conn.fetch('''
+            SELECT id, level, content, source_ids, token_count, covers_from, covers_to, created_at 
+            FROM summaries
+            WHERE conversation_id = $1 
+            ORDER BY created_at DESC
+        ''', conversation_id)
+    return [dict(r) for r in rows]  
+
+async def get_uncompressed_count(db, conversation_id: str) -> int:
+    # Count how many messages in a conversation are not yet compressed.
+    async with db.acquire() as conn:
+        count = await conn.fetchval('''
+            SELECT COUNT(*) FROM messages 
+            WHERE conversation_id = $1 
+            AND is_compressed = FALSE 
+            AND role != 'system'
+        ''', conversation_id)
+    return count

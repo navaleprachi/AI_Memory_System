@@ -6,6 +6,7 @@ from src.database.queries import save_message, get_messages, create_conversation
 from src.retrieval import search_chunks, score_and_rank, build_memory_context
 from src.retrieval.injector import build_prompt_with_memory
 from src.scoring import score_importance
+from src.compression import maybe_compress
 
 router = APIRouter()
 llm = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
@@ -44,6 +45,7 @@ async def chat(conversation_id: str, req: ChatRequest, request: Request, backgro
     #Step 2: Chunk and embed the user message for better retrieval later.
     await save_chunks(db, user_msg_id, conversation_id, req.message)
     background.add_task(score_and_store, db, user_msg_id, req.message, 'user')  # Score importance in background without blocking response
+    background.add_task(maybe_compress, db, conversation_id)  # Trigger compression in background if needed, without blocking response
         
     # Step 3: Embed query, search ALL conversations for relevant chunks
     raw_chunks = await search_chunks(db, req.message, conv_id=None, top_k=20)  # Search across all conversations for cross-session memory

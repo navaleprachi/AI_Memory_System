@@ -38,6 +38,20 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_message ON chunks(message_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_conversation ON chunks(conversation_id);
+CREATE TABLE IF NOT EXISTS summaries (
+	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+	conversation_id UUID NOT NULL REFERENCES conversations(id),
+	level INTEGER NOT NULL DEFAULT 1,
+	content TEXT NOT NULL,
+	source_ids TEXT[] NOT NULL,
+	token_count INTEGER,
+	covers_from TIMESTAMPTZ,
+	covers_to TIMESTAMPTZ,
+	parent_id UUID REFERENCES summaries(id),
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_summaries_conversation ON summaries(conversation_id, level, created_at);
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS source_type TEXT NOT NULL DEFAULT 'message';
 '''
 
 async def init_db():
