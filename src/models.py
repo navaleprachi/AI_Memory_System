@@ -1,6 +1,28 @@
 from pydantic import BaseModel
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
+
+class MemoryChunkDebug(BaseModel):
+    content: str
+    similarity: float
+    recency_score: float
+    importance_score: float
+    final_score: float
+    source_type: str           # "message" or "summary"
+    
+class CompressionStats(BaseModel):
+    total_messages: int
+    compressed_messages: int
+    tokens_summaries: int
+    compression_ratio: float
+    
+class ChatDebugResponse(BaseModel):
+    reply: str
+    conversation_id: str
+    tokens_used: int
+    message_count: int
+    memories_injected: List[MemoryChunkDebug]
+    compression_stats: CompressionStats
 
 # Request model (what the client sends to the server(AI))
 class ChatRequest(BaseModel):

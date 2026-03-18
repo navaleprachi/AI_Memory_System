@@ -7,6 +7,7 @@ from src.retrieval import search_chunks, score_and_rank, build_memory_context
 from src.retrieval.injector import build_prompt_with_memory
 from src.scoring import score_importance
 from src.compression import maybe_compress
+from src.models import MemoryChunkDebug, CompressionStats, ChatDebugResponse
 
 router = APIRouter()
 llm = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
@@ -115,3 +116,92 @@ async def list_conversations(request: Request):
     async with db.acquire() as conn:
         convs = await get_conversations(conn)
     return {'conversations': convs}
+
+# 5. Debug endpoint to inspect retrieved memory chunks and their scores for a given message (for experimentation)
+@router.post('/chat-with-debug/{conversation_id}')
+async def chat_with_debug(conversation_id: str, req: ChatRequest, request: Request, background: BackgroundTasks):
+    db = request.app.state.db
+
+    # Step 1: Get the conversation and its messages
+    async with db.acquire() as conn:
+        history = await get_messages(conn, conversation_id)
+        if not history:
+            # First message - add system prompt and reload history
+            await save_message(conn, conversation_id, 'system', SYSTEM_PROMPT)
+        # Save the incoming user message to DB    
+        user_msg_id = await save_message(conn, conversation_id, 'user', req.message)   
+
+    #Step 2: Chunk and embed the user message for better retrieval later.
+    await save_chunks(db, user_msg_id, conversation_id, req.message)
+    background.add_task(score_and_store, db, user_msg_id, req.message, 'user')  # Score importance in background without blocking response
+    background.add_task(maybe_compress, db, conversation_id)  # Trigger compression in background if needed, without blocking response
+        
+    # Step 4: Embed query and search ALL conversations for relevant chunks
+    raw_chunks = await search_chunks(db, req.message, conv_id=None, top_k=20)  # Search across all conversations for cross-session memory
+    
+    # Step 5: Score and rank the retrieved chunks using relevance + recency + importance
+    top_chunks = score_and_rank(raw_chunks, top_k=8)  # Keep top 8 for context injection
+    memory_text, n_chunks, n_tokens = build_memory_context(top_chunks)
+    
+    # Step 6: Get recent history (last 6 messages)
+    async with db.acquire() as conn:
+        all_history = await get_messages(conn, conversation_id)   # Keep only last 6 non-system messages to avoid flooding the prompt
+   
+    # Step 7: Assemble the full prompt with memory injected
+    recent = [m for m in all_history if m["role"] != "system"][-6:]
+    recent_fmt = [{"role": m["role"], "content": m["content"]} for m in recent]   
+    llm_messages = build_prompt_with_memory(
+        system_prompt=SYSTEM_PROMPT, 
+        user_message=req.message,
+        memory_text=memory_text,
+        recent_history=recent_fmt
+    )
+    
+    # Step 8: Call the LLM
+    response = llm.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=llm_messages
+    )
+    
+    reply = response.choices[0].message.content
+    tokens = response.usage.total_tokens
+        
+    # Step 9: Save the assistant's reply to DB
+    async with db.acquire() as conn:
+        reply_msg_id = await save_message(conn, conversation_id, 'assistant', reply)
+        updated = await get_messages(conn, conversation_id)
+       
+    # Step 10: Chunk and embed the assistant's reply too so it's searchable later. 
+    await save_chunks(db, reply_msg_id, conversation_id, reply)
+    background.add_task(score_and_store, db, reply_msg_id, reply, 'assistant')  # Score importance in background without blocking response
+    
+    async with db.acquire() as conn:
+        total = await conn.fetchval('SELECT COUNT(*) FROM messages WHERE conversation_id = $1 AND role != $2', conversation_id, 'system')
+        compressed = await conn.fetchval('SELECT COUNT(*) FROM messages WHERE conversation_id = $1 AND is_compressed = TRUE', conversation_id)
+        tokens_summaries = await conn.fetchval('SELECT COALESCE(SUM(token_count), 0) FROM summaries WHERE conversation_id = $1', conversation_id)
+        
+    ratio = round(compressed / total, 2) if total > 0 else 0.0
+        
+    return ChatDebugResponse(
+        reply=reply,
+        conversation_id=conversation_id,
+        tokens_used=tokens,
+        message_count=len(updated),
+        memories_injected = [
+            MemoryChunkDebug(
+                content          = c["content"][:200],
+                similarity       = round(c["similarity"],                4),
+                recency_score    = round(c["recency_score"],             4),
+                importance_score = round(c.get("importance_score", 0.5), 4),
+                final_score      = round(c["final_score"],               4),
+                source_type      = c.get("source_type", "message"),
+            )
+            for c in top_chunks
+        ],
+        compression_stats = CompressionStats(
+            total_messages      = total,
+            compressed_messages = compressed,
+            tokens_summaries    = tokens_summaries,
+            compression_ratio   = ratio,
+        ),
+    )
