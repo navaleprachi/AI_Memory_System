@@ -20,7 +20,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title='AI Memory System', lifespan=lifespan)
 
-app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
+allowed_origins = os.getenv('ALLOWED_ORIGINS', '*').split(',')
+app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_methods=['*'], allow_headers=['*'])
 
 app.include_router(router)
 

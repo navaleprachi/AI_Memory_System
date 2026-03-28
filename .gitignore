@@ -1,10 +1,26 @@
+# Environment
 .env
+backend/.env
+
+# Python virtual environments
 venv/
 .venv/
-.claude/
+backend/venv/
+backend/.venv/
+
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
-.DS_Store
 *.egg-info/
 .pytest_cache/
+
+# OS
+.DS_Store
+
+# Claude
+.claude/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
