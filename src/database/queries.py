@@ -78,6 +78,16 @@ async def get_summaries(db, conversation_id: str)-> list[dict]:
         ''', conversation_id)
     return [dict(r) for r in rows]  
 
+async def update_conversation_title(db: asyncpg.Connection, conversation_id: str, title: str) -> None:
+    await db.execute('UPDATE conversations SET title = $1 WHERE id = $2', title, conversation_id)
+
+async def delete_conversation(db, conversation_id: str) -> None:
+    # Delete in FK-safe order: summaries → messages (chunks cascade) → conversations
+    async with db.acquire() as conn:
+        await conn.execute('DELETE FROM summaries WHERE conversation_id = $1', conversation_id)
+        await conn.execute('DELETE FROM messages WHERE conversation_id = $1', conversation_id)
+        await conn.execute('DELETE FROM conversations WHERE id = $1', conversation_id)
+
 async def get_uncompressed_count(db, conversation_id: str) -> int:
     # Count how many messages in a conversation are not yet compressed.
     async with db.acquire() as conn:

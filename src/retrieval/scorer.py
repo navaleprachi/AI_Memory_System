@@ -49,6 +49,7 @@ def score_and_rank(chunks: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[st
             "conversation_id": chunk["conversation_id"],
             "token_count": chunk["token_count"],
             "created_at": chunk["created_at"],
+            "source_type": chunk.get("source_type", "message"),
             "similarity": relevance * 100,  # convert to percentage for easier interpretation
             "recency_score": recency,
             "importance_score": imp,

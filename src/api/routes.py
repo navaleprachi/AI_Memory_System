@@ -2,7 +2,7 @@ import os
 from fastapi import APIRouter, BackgroundTasks, Request, HTTPException
 from openai import OpenAI
 from src.models import ChatRequest, CreateConversationRequest, ChatResponse, ConversationResponse, MessageResponse
-from src.database.queries import save_message, get_messages, create_conversation, get_conversations, save_chunks, update_importance_score
+from src.database.queries import save_message, get_messages, create_conversation, get_conversations, save_chunks, update_importance_score, get_summaries, delete_conversation, update_conversation_title
 from src.retrieval import search_chunks, score_and_rank, build_memory_context
 from src.retrieval.injector import build_prompt_with_memory
 from src.scoring import score_importance
@@ -35,13 +35,19 @@ async def chat(conversation_id: str, req: ChatRequest, request: Request, backgro
         # 1. Get full conversation history from DB
         history = await get_messages(conn, conversation_id)
         
-        if not history:
+        is_first = not history
+        if is_first:
             # 2. First message - add system prompt and reload history
             await save_message(conn, conversation_id, 'system', SYSTEM_PROMPT)
             history = await get_messages(conn, conversation_id)
-        
+
         # 3. Save the incoming user message to DB
         user_msg_id = await save_message(conn, conversation_id, 'user', req.message)
+
+        # 4. Auto-title the conversation from the first user message
+        if is_first:
+            title = req.message.strip()[:50].rsplit(' ', 1)[0] if len(req.message) > 50 else req.message.strip()
+            await update_conversation_title(conn, conversation_id, title)
         
     #Step 2: Chunk and embed the user message for better retrieval later.
     await save_chunks(db, user_msg_id, conversation_id, req.message)
@@ -49,13 +55,16 @@ async def chat(conversation_id: str, req: ChatRequest, request: Request, backgro
     background.add_task(maybe_compress, db, conversation_id)  # Trigger compression in background if needed, without blocking response
         
     # Step 3: Embed query, search ALL conversations for relevant chunks
-    raw_chunks = await search_chunks(db, req.message, conv_id=None, top_k=20)  # Search across all conversations for cross-session memory
-    
+    try:
+        raw_chunks = await search_chunks(db, req.message, conv_id=None, top_k=20)  # Search across all conversations for cross-session memory
+        top_chunks = score_and_rank(raw_chunks, top_k=5)  # Keep top 5 for context injection
+        memory_text, n_chunks, n_tokens = build_memory_context(top_chunks)
+    except Exception as e:
+        print(f"[Memory] retrieval failed, continuing without context: {e}")
+        top_chunks, memory_text, n_chunks, n_tokens = [], "", 0, 0
+
     # Step 4: Score and rank the retrieved chunks using relevance + recency + importance
-    top_chunks = score_and_rank(raw_chunks, top_k=5)  # Keep top 5 for context injection
-    
     # Step 5: Format into a memory context block (token-budgeted)
-    memory_text, n_chunks, n_tokens = build_memory_context(top_chunks)
     
     print(f"[Memory] injected {n_chunks} chunks ({n_tokens} tokens)") #Log what was injected to inspect during experiments
     if top_chunks:
@@ -76,13 +85,17 @@ async def chat(conversation_id: str, req: ChatRequest, request: Request, backgro
     )
     
     # Step 8: Call the LLM
-    response = llm.chat.completions.create(
-         model="gpt-4o-mini",
-        messages=llm_messages
-    )
-    reply = response.choices[0].message.content
-    tokens = response.usage.total_tokens
-        
+    try:
+        response = llm.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=llm_messages
+        )
+        reply = response.choices[0].message.content
+        tokens = response.usage.total_tokens
+    except Exception as e:
+        print(f"[LLM] API call failed: {e}")
+        raise HTTPException(status_code=503, detail="LLM service unavailable. Please try again.")
+
     # Step 9: Save the assistant's reply to DB
     async with db.acquire() as conn:
         reply_msg_id = await save_message(conn, conversation_id, 'assistant', reply)
@@ -125,11 +138,15 @@ async def chat_with_debug(conversation_id: str, req: ChatRequest, request: Reque
     # Step 1: Get the conversation and its messages
     async with db.acquire() as conn:
         history = await get_messages(conn, conversation_id)
-        if not history:
-            # First message - add system prompt and reload history
+        is_first = not history
+        if is_first:
             await save_message(conn, conversation_id, 'system', SYSTEM_PROMPT)
-        # Save the incoming user message to DB    
-        user_msg_id = await save_message(conn, conversation_id, 'user', req.message)   
+        # Save the incoming user message to DB
+        user_msg_id = await save_message(conn, conversation_id, 'user', req.message)
+        # Auto-title from the first user message
+        if is_first:
+            title = req.message.strip()[:50].rsplit(' ', 1)[0] if len(req.message) > 50 else req.message.strip()
+            await update_conversation_title(conn, conversation_id, title)   
 
     #Step 2: Chunk and embed the user message for better retrieval later.
     await save_chunks(db, user_msg_id, conversation_id, req.message)
@@ -137,11 +154,15 @@ async def chat_with_debug(conversation_id: str, req: ChatRequest, request: Reque
     background.add_task(maybe_compress, db, conversation_id)  # Trigger compression in background if needed, without blocking response
         
     # Step 4: Embed query and search ALL conversations for relevant chunks
-    raw_chunks = await search_chunks(db, req.message, conv_id=None, top_k=20)  # Search across all conversations for cross-session memory
-    
+    try:
+        raw_chunks = await search_chunks(db, req.message, conv_id=None, top_k=20)  # Search across all conversations for cross-session memory
+        top_chunks = score_and_rank(raw_chunks, top_k=8)  # Keep top 8 for context injection
+        memory_text, n_chunks, n_tokens = build_memory_context(top_chunks)
+    except Exception as e:
+        print(f"[Memory] retrieval failed, continuing without context: {e}")
+        top_chunks, memory_text, n_chunks, n_tokens = [], "", 0, 0
+
     # Step 5: Score and rank the retrieved chunks using relevance + recency + importance
-    top_chunks = score_and_rank(raw_chunks, top_k=8)  # Keep top 8 for context injection
-    memory_text, n_chunks, n_tokens = build_memory_context(top_chunks)
     
     # Step 6: Get recent history (last 6 messages)
     async with db.acquire() as conn:
@@ -158,14 +179,17 @@ async def chat_with_debug(conversation_id: str, req: ChatRequest, request: Reque
     )
     
     # Step 8: Call the LLM
-    response = llm.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=llm_messages
-    )
-    
-    reply = response.choices[0].message.content
-    tokens = response.usage.total_tokens
-        
+    try:
+        response = llm.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=llm_messages
+        )
+        reply = response.choices[0].message.content
+        tokens = response.usage.total_tokens
+    except Exception as e:
+        print(f"[LLM] API call failed: {e}")
+        raise HTTPException(status_code=503, detail="LLM service unavailable. Please try again.")
+
     # Step 9: Save the assistant's reply to DB
     async with db.acquire() as conn:
         reply_msg_id = await save_message(conn, conversation_id, 'assistant', reply)
@@ -178,7 +202,7 @@ async def chat_with_debug(conversation_id: str, req: ChatRequest, request: Reque
     async with db.acquire() as conn:
         total = await conn.fetchval('SELECT COUNT(*) FROM messages WHERE conversation_id = $1 AND role != $2', conversation_id, 'system')
         compressed = await conn.fetchval('SELECT COUNT(*) FROM messages WHERE conversation_id = $1 AND is_compressed = TRUE', conversation_id)
-        tokens_summaries = await conn.fetchval('SELECT COALESCE(SUM(token_count), 0) FROM summaries WHERE conversation_id = $1', conversation_id)
+        total_summaries = await conn.fetchval('SELECT COUNT(*) FROM summaries WHERE conversation_id = $1', conversation_id)
         
     ratio = round(compressed / total, 2) if total > 0 else 0.0
         
@@ -201,7 +225,53 @@ async def chat_with_debug(conversation_id: str, req: ChatRequest, request: Reque
         compression_stats = CompressionStats(
             total_messages      = total,
             compressed_messages = compressed,
-            tokens_summaries    = tokens_summaries,
+            total_summaries     = total_summaries,
             compression_ratio   = ratio,
         ),
     )
+    
+# 6. Get all summaries + live compression stats for a conversation
+@router.get('/conversations/{conversation_id}/summaries')
+async def get_conversation_summaries(conversation_id: str, request: Request):
+    db = request.app.state.db
+    summaries = await get_summaries(db, conversation_id)
+    async with db.acquire() as conn:
+        total      = await conn.fetchval('SELECT COUNT(*) FROM messages WHERE conversation_id = $1 AND role != $2', conversation_id, 'system')
+        compressed = await conn.fetchval('SELECT COUNT(*) FROM messages WHERE conversation_id = $1 AND is_compressed = TRUE', conversation_id)
+    total_summaries = len(summaries)
+    ratio = round(compressed / total, 2) if total > 0 else 0.0
+    result = []
+    for s in summaries:
+        result.append({
+            "id":          str(s["id"]),
+            "level":       s["level"],
+            "content":     s["content"],
+            "token_count": s["token_count"],
+            "covers_from": s["covers_from"].isoformat() if s["covers_from"] else None,
+            "covers_to":   s["covers_to"].isoformat()   if s["covers_to"]   else None,
+            "created_at":  s["created_at"].isoformat()  if s["created_at"]  else None,
+        })
+    return {
+        "summaries": result,
+        "stats": {
+            "total_messages":      total,
+            "compressed_messages": compressed,
+            "total_summaries":     total_summaries,
+            "compression_ratio":   ratio,
+        }
+    }
+
+# 7. Manually trigger compression for a conversation (force=True bypasses the 20-message threshold)
+@router.post('/conversations/{conversation_id}/compress')
+async def compress_conversation(conversation_id: str, request: Request):
+    db = request.app.state.db
+    fired = await maybe_compress(db, conversation_id, force=True)
+    return {"fired": fired, "message": "Compression ran." if fired else "No messages to compress."}
+
+# 8. Delete a conversation and all its data
+@router.delete('/conversations/{conversation_id}')
+async def remove_conversation(conversation_id: str, request: Request):
+    db = request.app.state.db
+    await delete_conversation(db, conversation_id)
+    return {"status": "deleted"}
+

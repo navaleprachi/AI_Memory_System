@@ -2,7 +2,13 @@ import { useEffect, useState } from "react";
 import ChatPanel from "./components/ChatPanel";
 import MemoryInspector from "./components/MemoryInspector";
 import * as api from "./api";
-import type { Conversation, MemoryChunk, CompressionStats } from "./api";
+import type {
+  Conversation,
+  MemoryChunk,
+  CompressionStats,
+  Summary,
+} from "./api";
+import { Plus, X, MessageSquare } from "lucide-react";
 
 interface Message {
   role: "user" | "assistant";
@@ -17,6 +23,9 @@ export default function App() {
   const [compressionStats, setCompressionStats] =
     useState<CompressionStats | null>(null);
   const [tokensUsed, setTokensUsed] = useState(0);
+  const [summaries, setSummaries] = useState<Summary[]>([]);
+  const [isCompressing, setIsCompressing] = useState(false);
+  const [compressResult, setCompressResult] = useState<{ fired: boolean; message: string } | null>(null);
 
   useEffect(() => {
     fetchConversations();
@@ -32,12 +41,23 @@ export default function App() {
     }
   };
 
+  const fetchSummaries = async (id: string) => {
+    try {
+      const { summaries, stats } = await api.getSummaries(id);
+      setSummaries(summaries);
+      setCompressionStats(stats);
+    } catch (err) {
+      console.error("Failed to fetch summaries:", err);
+    }
+  };
+
   const handleNew = async () => {
     try {
       const id = await api.createConversation("New conversation");
       setActiveConvId(id);
       setInitialMessages([]);
       setLastMemories([]);
+      setSummaries([]);
       setCompressionStats(null);
       await fetchConversations();
     } catch (err) {
@@ -49,6 +69,8 @@ export default function App() {
     try {
       setActiveConvId(id);
       setLastMemories([]);
+      setSummaries([]);
+      await fetchSummaries(id);
       try {
         const res: any = await api.getHistory(id);
         const messages = res.messages || res;
@@ -58,7 +80,6 @@ export default function App() {
             .map((m: any) => ({ role: m.role, content: m.content })),
         );
       } catch (err) {
-        // Handle 404 or other errors (empty conversation) - show empty chat
         console.error(
           "Loading conversation history failed (showing empty):",
           err,
@@ -72,9 +93,36 @@ export default function App() {
 
   const handleResponse = async (res: any) => {
     setLastMemories(res.memories_injected || []);
-    setCompressionStats(res.compression_stats || null);
     setTokensUsed(res.tokens_used || 0);
+    if (activeConvId) await fetchSummaries(activeConvId);
     await fetchConversations();
+  };
+
+  const handleDelete = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    await api.deleteConversation(id);
+    if (activeConvId === id) {
+      setActiveConvId(null);
+      setInitialMessages([]);
+      setLastMemories([]);
+      setCompressionStats(null);
+      setSummaries([]);
+    }
+    await fetchConversations();
+  };
+
+  const handleCompress = async () => {
+    if (!activeConvId) return;
+    setIsCompressing(true);
+    setCompressResult(null);
+    try {
+      const result = await api.triggerCompress(activeConvId);
+      setCompressResult(result);
+      await fetchSummaries(activeConvId);
+      await fetchConversations();
+    } finally {
+      setIsCompressing(false);
+    }
   };
 
   return (
@@ -85,31 +133,43 @@ export default function App() {
           <p className="text-white font-bold text-sm mb-3">AI Memory System</p>
           <button
             onClick={handleNew}
-            className="w-full py-2 rounded-lg bg-indigo-600 text-white text-sm
-                       font-semibold hover:bg-indigo-700 transition-colors"
+            className="flex items-center justify-center gap-2 w-full px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm
+                       font-semibold hover:bg-indigo-700 transition-colors cursor-pointer"
           >
-            + New Chat
+            <Plus className="" size={14} />
+            New Chat
           </button>
         </div>
         <div className="flex-1 overflow-y-auto py-2 px-2">
           {conversations.map((conv) => (
-            <button
+            <div
               key={conv.id}
-              onClick={() => handleSelect(conv.id)}
               className={
-                "w-full text-left px-3 py-2.5 rounded-lg mb-1 transition-colors " +
+                "group relative w-full text-left px-3 py-2.5 rounded-lg mb-1 transition-colors cursor-pointer " +
                 (activeConvId === conv.id
                   ? "bg-slate-700 text-white"
                   : "text-slate-400 hover:bg-slate-800 hover:text-white")
               }
+              onClick={() => handleSelect(conv.id)}
             >
-              <p className="text-xs font-medium truncate">
-                {conv.title ?? "Untitled chat"}
-              </p>
-              <p className="text-xs opacity-50 mt-0.5">
+              <div className="flex items-center gap-2 pr-5">
+                <MessageSquare size={12} className="shrink-0 opacity-60" />
+                <p className="text-xs font-medium truncate">
+                  {conv.title ?? "Untitled chat"}
+                </p>
+              </div>
+              <p className="text-xs opacity-40 mt-0.5 ml-5">
                 {conv.message_count} messages
               </p>
-            </button>
+              <button
+                onClick={(e) => handleDelete(conv.id, e)}
+                className="flex absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100
+                           text-slate-400 hover:text-red-400 transition-opacity text-sm leading-none px-1 cursor-pointer"
+                title="Delete conversation"
+              >
+                <X size={14} />
+              </button>
+            </div>
           ))}
         </div>
       </aside>
@@ -140,6 +200,10 @@ export default function App() {
           memories={lastMemories}
           compressionStats={compressionStats}
           tokensUsed={tokensUsed}
+          summaries={summaries}
+          onCompress={activeConvId ? handleCompress : null}
+          isCompressing={isCompressing}
+          compressResult={compressResult}
         />
       </div>
     </div>

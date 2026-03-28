@@ -13,7 +13,7 @@ class MemoryChunkDebug(BaseModel):
 class CompressionStats(BaseModel):
     total_messages: int
     compressed_messages: int
-    tokens_summaries: int
+    total_summaries: int
     compression_ratio: float
     
 class ChatDebugResponse(BaseModel):
