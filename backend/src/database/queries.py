@@ -27,10 +27,15 @@ async def save_message(db: asyncpg.Connection, conv_id: str, role: str, content:
         INSERT INTO messages (conversation_id, role, content, token_count) VALUES ($1, $2, $3, $4) RETURNING id
     ''', conv_id, role, content, tokens)
 
-    # Update conversation metadata
-    await db.execute('''
-        UPDATE conversations SET last_active = NOW(), message_count = message_count + 1 WHERE id = $1
-    ''', conv_id)
+    # Update conversation metadata — only count visible messages, not system prompt
+    if role != 'system':
+        await db.execute('''
+            UPDATE conversations SET last_active = NOW(), message_count = message_count + 1 WHERE id = $1
+        ''', conv_id)
+    else:
+        await db.execute('''
+            UPDATE conversations SET last_active = NOW() WHERE id = $1
+        ''', conv_id)
 
     return str(row['id'])
 

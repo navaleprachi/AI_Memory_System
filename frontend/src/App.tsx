@@ -26,6 +26,7 @@ export default function App() {
   const [summaries, setSummaries] = useState<Summary[]>([]);
   const [isCompressing, setIsCompressing] = useState(false);
   const [compressResult, setCompressResult] = useState<{ fired: boolean; message: string } | null>(null);
+  const [isTransitioning, setIsTransitioning] = useState(false);
 
   useEffect(() => {
     fetchConversations();
@@ -53,41 +54,49 @@ export default function App() {
 
   const handleNew = async () => {
     try {
-      const id = await api.createConversation("New conversation");
-      setActiveConvId(id);
+      setIsTransitioning(true);
+      setActiveConvId(null);
       setInitialMessages([]);
       setLastMemories([]);
       setSummaries([]);
       setCompressionStats(null);
+      const id = await api.createConversation("New conversation");
       await fetchConversations();
+      setActiveConvId(id);
     } catch (err) {
       console.error("Failed to create conversation:", err);
+    } finally {
+      setIsTransitioning(false);
     }
   };
 
   const handleSelect = async (id: string) => {
+    if (id === activeConvId) return;
     try {
-      setActiveConvId(id);
+      setIsTransitioning(true);
+      setActiveConvId(null);
       setLastMemories([]);
       setSummaries([]);
-      await fetchSummaries(id);
-      try {
-        const res: any = await api.getHistory(id);
-        const messages = res.messages || res;
+      setCompressionStats(null);
+      const [historyRes] = await Promise.all([
+        api.getHistory(id).catch(() => null),
+        fetchSummaries(id),
+      ]);
+      if (historyRes) {
+        const messages = historyRes.messages || historyRes;
         setInitialMessages(
           messages
             .filter((m: any) => m.role !== "system")
             .map((m: any) => ({ role: m.role, content: m.content })),
         );
-      } catch (err) {
-        console.error(
-          "Loading conversation history failed (showing empty):",
-          err,
-        );
+      } else {
         setInitialMessages([]);
       }
+      setActiveConvId(id);
     } catch (err) {
       console.error("Failed to select conversation:", err);
+    } finally {
+      setIsTransitioning(false);
     }
   };
 
@@ -176,7 +185,46 @@ export default function App() {
 
       {/* Main chat */}
       <main className="flex-1 flex flex-col overflow-hidden">
-        {activeConvId ? (
+        {isTransitioning ? (
+          <div className="flex flex-col h-full bg-white">
+            {/* Skeleton header */}
+            <div className="border-b border-slate-100 px-6 py-3.5 shrink-0 flex items-center gap-3">
+              <div className="w-2 h-2 rounded-full bg-slate-200 animate-pulse" />
+              <div className="h-3 w-24 rounded-full bg-slate-100 animate-pulse" />
+            </div>
+            {/* Skeleton messages */}
+            <div className="flex-1 px-6 py-6 flex flex-col gap-5">
+              <div className="flex gap-3">
+                <div className="w-7 h-7 rounded-full bg-slate-100 animate-pulse shrink-0" />
+                <div className="flex flex-col gap-2 w-2/3">
+                  <div className="h-3 rounded-full bg-slate-100 animate-pulse w-full" />
+                  <div className="h-3 rounded-full bg-slate-100 animate-pulse w-4/5" />
+                  <div className="h-3 rounded-full bg-slate-100 animate-pulse w-3/5" />
+                </div>
+              </div>
+              <div className="flex gap-3 justify-end">
+                <div className="flex flex-col gap-2 w-1/2">
+                  <div className="h-3 rounded-full bg-indigo-100 animate-pulse w-full" />
+                  <div className="h-3 rounded-full bg-indigo-100 animate-pulse w-3/4 ml-auto" />
+                </div>
+                <div className="w-7 h-7 rounded-full bg-indigo-100 animate-pulse shrink-0" />
+              </div>
+              <div className="flex gap-3">
+                <div className="w-7 h-7 rounded-full bg-slate-100 animate-pulse shrink-0" />
+                <div className="flex flex-col gap-2 w-3/4">
+                  <div className="h-3 rounded-full bg-slate-100 animate-pulse w-full" />
+                  <div className="h-3 rounded-full bg-slate-100 animate-pulse w-5/6" />
+                  <div className="h-3 rounded-full bg-slate-100 animate-pulse w-2/3" />
+                  <div className="h-3 rounded-full bg-slate-100 animate-pulse w-4/5" />
+                </div>
+              </div>
+            </div>
+            {/* Skeleton input */}
+            <div className="border-t border-slate-100 px-4 py-3.5">
+              <div className="h-10 rounded-xl bg-slate-100 animate-pulse" />
+            </div>
+          </div>
+        ) : activeConvId ? (
           <ChatPanel
             conversationId={activeConvId}
             initialMessages={initialMessages}
