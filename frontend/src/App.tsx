@@ -60,6 +60,7 @@ export default function App() {
       setLastMemories([]);
       setSummaries([]);
       setCompressionStats(null);
+      setCompressResult(null);
       const id = await api.createConversation("New conversation");
       await fetchConversations();
       setActiveConvId(id);
@@ -78,6 +79,7 @@ export default function App() {
       setLastMemories([]);
       setSummaries([]);
       setCompressionStats(null);
+      setCompressResult(null);
       const [historyRes] = await Promise.all([
         api.getHistory(id).catch(() => null),
         fetchSummaries(id),
