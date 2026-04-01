@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import ChatPanel from "./components/ChatPanel";
 import MemoryInspector from "./components/MemoryInspector";
+import { Analytics } from "@vercel/analytics/react";
 import * as api from "./api";
 import type {
   Conversation,
@@ -25,7 +26,10 @@ export default function App() {
   const [tokensUsed, setTokensUsed] = useState(0);
   const [summaries, setSummaries] = useState<Summary[]>([]);
   const [isCompressing, setIsCompressing] = useState(false);
-  const [compressResult, setCompressResult] = useState<{ fired: boolean; message: string } | null>(null);
+  const [compressResult, setCompressResult] = useState<{
+    fired: boolean;
+    message: string;
+  } | null>(null);
   const [isTransitioning, setIsTransitioning] = useState(false);
 
   useEffect(() => {
@@ -256,6 +260,7 @@ export default function App() {
           compressResult={compressResult}
         />
       </div>
+      <Analytics />
     </div>
   );
 }
