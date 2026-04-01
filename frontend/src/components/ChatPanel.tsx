@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Send } from "lucide-react";
 import { sendMessage } from "../api";
+import { usePostHog } from "posthog-js/react";
 
 interface Message {
   role: "user" | "assistant";
@@ -72,6 +73,7 @@ function TypingDots() {
 }
 
 export default function ChatPanel({ conversationId, initialMessages = [], onNewResponse }: Props) {
+  const posthog = usePostHog();
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -93,6 +95,7 @@ export default function ChatPanel({ conversationId, initialMessages = [], onNewR
     setLoading(true);
     try {
       const res = await sendMessage(conversationId, text);
+      posthog.capture("message_sent", { conversation_id: conversationId });
       setMessages((p) => [...p, { role: "assistant", content: res.reply }]);
       onNewResponse(res);
     } catch {

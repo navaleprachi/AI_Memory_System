@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import ChatPanel from "./components/ChatPanel";
 import MemoryInspector from "./components/MemoryInspector";
 import { Analytics } from "@vercel/analytics/react";
+import { usePostHog } from "posthog-js/react";
 import * as api from "./api";
 import type {
   Conversation,
@@ -17,6 +18,7 @@ interface Message {
 }
 
 export default function App() {
+  const posthog = usePostHog();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const [initialMessages, setInitialMessages] = useState<Message[]>([]);
@@ -66,6 +68,7 @@ export default function App() {
       setCompressionStats(null);
       setCompressResult(null);
       const id = await api.createConversation("New conversation");
+      posthog.capture("conversation_created");
       await fetchConversations();
       setActiveConvId(id);
     } catch (err) {
@@ -132,6 +135,7 @@ export default function App() {
     setCompressResult(null);
     try {
       const result = await api.triggerCompress(activeConvId);
+      posthog.capture("compression_triggered", { fired: result.fired, message: result.message });
       setCompressResult(result);
       await fetchSummaries(activeConvId);
       await fetchConversations();
